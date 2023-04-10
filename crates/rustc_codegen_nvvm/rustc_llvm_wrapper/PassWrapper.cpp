@@ -1127,8 +1127,15 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
   {
     ResolvedODR[ModuleIdentifier][GUID] = NewLinkage;
   };
+#if LLVM_VERSION_GE(8, 0)
+#if LLVM_VERSION_GE(9, 0)
+  thinLTOResolvePrevailingInIndex(Ret->Index, isPrevailing, recordNewLinkage, Ret->GUIDPreservedSymbols);
+#else
+  thinLTOResolvePrevailingInIndex(Ret->Index, isPrevailing, recordNewLinkage);
+#endif
+#else
   thinLTOResolveWeakForLinkerInIndex(Ret->Index, isPrevailing, recordNewLinkage);
-
+#endif
   // Here we calculate an `ExportedGUIDs` set for use in the `isExported`
   // callback below. This callback below will dictate the linkage for all
   // summaries in the index, and we basically just only want to ensure that dead
@@ -1198,7 +1205,11 @@ LLVMRustPrepareThinLTOResolveWeak(const LLVMRustThinLTOData *Data, LLVMModuleRef
 {
   Module &Mod = *unwrap(M);
   const auto &DefinedGlobals = Data->ModuleToDefinedGVSummaries.lookup(Mod.getModuleIdentifier());
+#if LLVM_VERSION_GE(8, 0)
+  thinLTOResolvePrevailingInModule(Mod, DefinedGlobals);
+#else
   thinLTOResolveWeakForLinkerModule(Mod, DefinedGlobals);
+#endif
   return true;
 }
 

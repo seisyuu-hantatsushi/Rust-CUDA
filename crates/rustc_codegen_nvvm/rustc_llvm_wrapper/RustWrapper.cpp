@@ -183,7 +183,7 @@ extern "C" LLVMValueRef LLVMRustGetOrInsertFunction(LLVMModuleRef M,
                                                     LLVMTypeRef FunctionTy)
 {
   return wrap(
-      unwrap(M)->getOrInsertFunction(Name, unwrap<FunctionType>(FunctionTy)));
+      unwrap(M)->getOrInsertFunction(Name, unwrap<FunctionType>(FunctionTy)).getCallee());
 }
 
 extern "C" LLVMValueRef
@@ -435,7 +435,7 @@ extern "C" LLVMValueRef
 LLVMRustBuildAtomicLoad(LLVMBuilderRef B, LLVMValueRef Source, const char *Name,
                         LLVMAtomicOrdering Order)
 {
-  LoadInst *LI = new LoadInst(unwrap(Source), 0);
+    LoadInst *LI = new LoadInst(unwrap(Source), (const char*)nullptr);
   LI->setAtomic(fromRust(Order));
   return wrap(unwrap(B)->Insert(LI, Name));
 }
@@ -602,7 +602,9 @@ enum class LLVMRustDIFlags : uint32_t
   FlagIntroducedVirtual = (1 << 18),
   FlagBitField = (1 << 19),
   FlagNoReturn = (1 << 20),
+#if LLVM_VERSION_LT(9, 0) 
   FlagMainSubprogram = (1 << 21),
+#endif
   // Do not add values that are not supported by the minimum LLVM
   // version we support! see llvm/include/llvm/IR/DebugInfoFlags.def
 };
@@ -728,15 +730,87 @@ static unsigned fromRust(LLVMRustDIFlags Flags)
   {
     Result |= DINode::DIFlags::FlagNoReturn;
   }
+
+#if LLVM_VERSION_LT(8, 0)
   if (isSet(Flags & LLVMRustDIFlags::FlagMainSubprogram))
   {
     Result |= DINode::DIFlags::FlagMainSubprogram;
   }
 #endif
 
+#endif
+
   return Result;
 }
 
+#if LLVM_VERSION_GE(8, 0) 
+// These values **must** match debuginfo::DISPFlags! They also *happen*
+// to match LLVM, but that isn't required as we do giant sets of
+// matching below. The value shouldn't be directly passed to LLVM.
+enum class LLVMRustDISPFlags : uint32_t {
+  SPFlagZero = 0,
+  SPFlagVirtual = 1,
+  SPFlagPureVirtual = 2,
+  SPFlagLocalToUnit = (1 << 2),
+  SPFlagDefinition = (1 << 3),
+  SPFlagOptimized = (1 << 4),
+  SPFlagMainSubprogram = (1 << 5),
+  // Do not add values that are not supported by the minimum LLVM
+  // version we support! see llvm/include/llvm/IR/DebugInfoFlags.def
+  // (In LLVM < 8, createFunction supported these as separate bool arguments.)
+};
+inline LLVMRustDISPFlags operator&(LLVMRustDISPFlags A, LLVMRustDISPFlags B) {
+  return static_cast<LLVMRustDISPFlags>(static_cast<uint32_t>(A) &
+                                      static_cast<uint32_t>(B));
+}
+
+inline LLVMRustDISPFlags operator|(LLVMRustDISPFlags A, LLVMRustDISPFlags B) {
+  return static_cast<LLVMRustDISPFlags>(static_cast<uint32_t>(A) |
+                                      static_cast<uint32_t>(B));
+}
+
+inline LLVMRustDISPFlags &operator|=(LLVMRustDISPFlags &A, LLVMRustDISPFlags B) {
+  return A = A | B;
+}
+
+inline bool isSet(LLVMRustDISPFlags F) { return F != LLVMRustDISPFlags::SPFlagZero; }
+
+inline LLVMRustDISPFlags virtuality(LLVMRustDISPFlags F) {
+  return static_cast<LLVMRustDISPFlags>(static_cast<uint32_t>(F) & 0x3);
+}
+
+static DISubprogram::DISPFlags fromRust(LLVMRustDISPFlags SPFlags) {
+  DISubprogram::DISPFlags Result = DISubprogram::DISPFlags::SPFlagZero;
+
+  switch (virtuality(SPFlags)) {
+  case LLVMRustDISPFlags::SPFlagVirtual:
+    Result |= DISubprogram::DISPFlags::SPFlagVirtual;
+    break;
+  case LLVMRustDISPFlags::SPFlagPureVirtual:
+    Result |= DISubprogram::DISPFlags::SPFlagPureVirtual;
+    break;
+  default:
+    // The rest are handled below
+    break;
+  }
+
+  if (isSet(SPFlags & LLVMRustDISPFlags::SPFlagLocalToUnit)) {
+    Result |= DISubprogram::DISPFlags::SPFlagLocalToUnit;
+  }
+  if (isSet(SPFlags & LLVMRustDISPFlags::SPFlagDefinition)) {
+    Result |= DISubprogram::DISPFlags::SPFlagDefinition;
+  }
+  if (isSet(SPFlags & LLVMRustDISPFlags::SPFlagOptimized)) {
+    Result |= DISubprogram::DISPFlags::SPFlagOptimized;
+  }
+  if (isSet(SPFlags & LLVMRustDISPFlags::SPFlagMainSubprogram)) {
+    Result |= DISubprogram::DISPFlags::SPFlagMainSubprogram;
+  }
+
+  return Result;
+}
+#endif
+ 
 extern "C" uint32_t LLVMRustDebugMetadataVersion()
 {
   return DEBUG_METADATA_VERSION;
@@ -804,11 +878,12 @@ LLVMRustDIBuilderCreateSubroutineType(LLVMRustDIBuilderRef Builder,
       DITypeRefArray(unwrap<MDTuple>(ParameterTypes))));
 }
 
+#if LLVM_VERSION_LT(8, 0) 
 extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateFunction(
     LLVMRustDIBuilderRef Builder, LLVMMetadataRef Scope, const char *Name,
     const char *LinkageName, LLVMMetadataRef File, unsigned LineNo,
     LLVMMetadataRef Ty, bool IsLocalToUnit, bool IsDefinition,
-    unsigned ScopeLine, LLVMRustDIFlags Flags, bool IsOptimized,
+    unsigned ScopeLine, LLVMRustDIFlags Flags, bool IsOptimaized,
     LLVMValueRef MaybeFn, LLVMMetadataRef TParam, LLVMMetadataRef Decl)
 {
   DITemplateParameterArray TParams =
@@ -822,6 +897,31 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateFunction(
     unwrap<Function>(MaybeFn)->setSubprogram(Sub);
   return wrap(Sub);
 }
+#else
+extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateFunction(
+    LLVMRustDIBuilderRef Builder, LLVMMetadataRef Scope,
+    const char *Name, size_t NameLen,
+    const char *LinkageName, size_t LinkageNameLen,
+    LLVMMetadataRef File, unsigned LineNo,
+    LLVMMetadataRef Ty, unsigned ScopeLine,
+    LLVMRustDIFlags Flags, LLVMRustDISPFlags SPFlags,
+    LLVMValueRef MaybeFn, LLVMMetadataRef TParam, LLVMMetadataRef Decl)
+{
+  DITemplateParameterArray TParams =
+      DITemplateParameterArray(unwrap<MDTuple>(TParam));
+  DISubprogram *Sub = Builder->createFunction(
+      unwrapDI<DIScope>(Scope),
+      StringRef(Name, NameLen),
+      StringRef(LinkageName, LinkageNameLen),
+      unwrapDI<DIFile>(File),
+      LineNo, unwrapDI<DISubroutineType>(Ty),
+      ScopeLine, fromRust(Flags), fromRust(SPFlags), TParams,
+      unwrapDIPtr<DISubprogram>(Decl));
+  if (MaybeFn)
+    unwrap<Function>(MaybeFn)->setSubprogram(Sub);
+  return wrap(Sub);
+}
+#endif
 
 extern "C" LLVMMetadataRef
 LLVMRustDIBuilderCreateBasicType(LLVMRustDIBuilderRef Builder, const char *Name,
@@ -940,11 +1040,17 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateStaticVariable(
         FPVal->getValueAPF().bitcastToAPInt().getZExtValue());
   }
 
-  llvm::DIGlobalVariableExpression *VarExpr = Builder->createGlobalVariableExpression(
+#if LLVM_VERSION_LT(8, 0)
+    llvm::DIGlobalVariableExpression *VarExpr = Builder->createGlobalVariableExpression(
       unwrapDI<DIDescriptor>(Context), Name, LinkageName,
       unwrapDI<DIFile>(File), LineNo, unwrapDI<DIType>(Ty), IsLocalToUnit,
       InitExpr, unwrapDIPtr<MDNode>(Decl), AlignInBits);
-
+#else
+  llvm::DIGlobalVariableExpression *VarExpr = Builder->createGlobalVariableExpression(
+      unwrapDI<DIDescriptor>(Context), Name, LinkageName,
+      unwrapDI<DIFile>(File), LineNo, unwrapDI<DIType>(Ty), IsLocalToUnit,
+      InitExpr, unwrapDIPtr<MDNode>(Decl), nullptr, AlignInBits);
+#endif
   InitVal->setMetadata("dbg", VarExpr);
 
   return wrap(VarExpr);
@@ -1212,7 +1318,11 @@ extern "C" void LLVMRustUnpackOptimizationDiagnostic(
   {
     *Line = loc.getLine();
     *Column = loc.getColumn();
+#if LLVM_VERSION_GE(8, 0)
+    FilenameOS << loc.getAbsolutePath();
+#else
     FilenameOS << loc.getFilename();
+#endif
   }
 #else
   const DebugLoc &loc = Opt->getDebugLoc();
